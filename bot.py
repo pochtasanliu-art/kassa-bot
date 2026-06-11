@@ -1,12 +1,12 @@
-import logging
-import sqlite3
 import os
-from datetime import datetime
+import sqlite3
 import asyncio
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import logging
+from datetime import datetime
+import httpx
 
 TOKEN = os.environ.get("BOT_TOKEN", "")
+API = f"https://api.telegram.org/bot{TOKEN}"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,124 +15,114 @@ DB_PATH = "kassa.db"
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS operations (
+    conn.execute('''CREATE TABLE IF NOT EXISTS operations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id INTEGER,
-        amount REAL,
-        description TEXT,
-        created_at TEXT
-    )''')
+        chat_id INTEGER, amount REAL,
+        description TEXT, created_at TEXT)''')
     conn.commit()
     conn.close()
 
 def get_balance(chat_id):
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT COALESCE(SUM(amount), 0) FROM operations WHERE chat_id=?", (chat_id,))
-    balance = c.fetchone()[0]
+    r = conn.execute("SELECT COALESCE(SUM(amount),0) FROM operations WHERE chat_id=?", (chat_id,)).fetchone()[0]
     conn.close()
-    return balance
+    return r
 
-def add_operation(chat_id, amount, description):
+def add_op(chat_id, amount, desc):
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT INTO operations (chat_id, amount, description, created_at) VALUES (?,?,?,?)",
-              (chat_id, amount, description, datetime.now().strftime("%d.%m.%Y %H:%M")))
+    conn.execute("INSERT INTO operations (chat_id,amount,description,created_at) VALUES (?,?,?,?)",
+                 (chat_id, amount, desc, datetime.now().strftime("%d.%m.%Y %H:%M")))
     conn.commit()
     conn.close()
 
-def get_history(chat_id, limit=10):
+def get_history(chat_id):
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT amount, description, created_at FROM operations WHERE chat_id=? ORDER BY id DESC LIMIT ?",
-              (chat_id, limit))
-    rows = c.fetchall()
+    rows = conn.execute("SELECT amount,description,created_at FROM operations WHERE chat_id=? ORDER BY id DESC LIMIT 10", (chat_id,)).fetchall()
     conn.close()
     return rows
 
-def reset_kassa(chat_id):
+def reset(chat_id):
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM operations WHERE chat_id=?", (chat_id,))
+    conn.execute("DELETE FROM operations WHERE chat_id=?", (chat_id,))
     conn.commit()
     conn.close()
 
-def fmt(amount):
-    return f"{amount:,.0f}".replace(",", " ")
+def fmt(n):
+    return f"{abs(n):,.0f}".replace(",", " ")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "💰 Бот-касса запущен!\n\n"
-        "Как пользоваться:\n"
-        "+50000 приход наличные — приход\n"
-        "-30000 выдача Алексей — расход\n\n"
-        "Команды:\n"
-        "/касса — текущий остаток\n"
-        "/история — последние операции\n"
-        "/обнулить — сбросить кассу"
-    )
+async def send(client, chat_id, text):
+    await client.post(f"{API}/sendMessage", json={"chat_id": chat_id, "text": text})
 
-async def kassa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    balance = get_balance(chat_id)
-    emoji = "✅" if balance >= 0 else "⚠️"
-    await update.message.reply_text(f"{emoji} Касса: {fmt(balance)} ₽")
-
-async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    rows = get_history(chat_id)
-    if not rows:
-        await update.message.reply_text("📋 Операций пока нет.")
+async def handle(client, update):
+    msg = update.get("message") or update.get("edited_message")
+    if not msg:
         return
-    lines = ["📋 Последние операции:\n"]
-    for amount, desc, dt in rows:
-        sign = "➕" if amount > 0 else "➖"
-        lines.append(f"{sign} {fmt(abs(amount))} ₽ — {desc} ({dt})")
-    balance = get_balance(chat_id)
-    lines.append(f"\n💰 Итого в кассе: {fmt(balance)} ₽")
-    await update.message.reply_text("\n".join(lines))
-
-async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    reset_kassa(chat_id)
-    await update.message.reply_text("🔄 Касса обнулена.")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+    chat_id = msg["chat"]["id"]
+    text = msg.get("text", "").strip()
+    if not text:
         return
-    text = update.message.text.strip()
-    chat_id = update.effective_chat.id
-    if text and text[0] in ('+', '-'):
+
+    if text in ("/start", "/start@robkassa_bot"):
+        await send(client, chat_id,
+            "💰 Бот-касса запущен!\n\n"
+            "+50000 приход наличные — приход\n"
+            "-30000 выдача Алексей — расход\n\n"
+            "/касса — остаток\n"
+            "/история — операции\n"
+            "/обнулить — сброс")
+
+    elif text in ("/касса", "/kassa", "/касса@robkassa_bot"):
+        b = get_balance(chat_id)
+        e = "✅" if b >= 0 else "⚠️"
+        await send(client, chat_id, f"{e} Касса: {fmt(b)} ₽")
+
+    elif text in ("/история", "/history"):
+        rows = get_history(chat_id)
+        if not rows:
+            await send(client, chat_id, "Операций пока нет.")
+            return
+        lines = ["📋 Последние операции:\n"]
+        for amount, desc, dt in rows:
+            s = "➕" if amount > 0 else "➖"
+            lines.append(f"{s} {fmt(amount)} ₽ — {desc} ({dt})")
+        b = get_balance(chat_id)
+        lines.append(f"\n💰 Касса: {fmt(b)} ₽")
+        await send(client, chat_id, "\n".join(lines))
+
+    elif text in ("/обнулить", "/reset"):
+        reset(chat_id)
+        await send(client, chat_id, "🔄 Касса обнулена.")
+
+    elif text[0] in ("+", "-"):
         parts = text.split(None, 1)
         try:
-            num_str = parts[0].replace(" ", "").replace(",", "")
-            amount = float(num_str)
-            description = parts[1].strip() if len(parts) > 1 else "без описания"
-            add_operation(chat_id, amount, description)
-            balance = get_balance(chat_id)
-            sign = "➕" if amount > 0 else "➖"
-            emoji = "✅" if balance >= 0 else "⚠️"
-            await update.message.reply_text(
-                f"{sign} {fmt(abs(amount))} ₽ — {description}\n"
-                f"{emoji} Касса: {fmt(balance)} ₽"
-            )
+            amount = float(parts[0].replace(" ", "").replace(",", ""))
+            desc = parts[1].strip() if len(parts) > 1 else "без описания"
+            add_op(chat_id, amount, desc)
+            b = get_balance(chat_id)
+            s = "➕" if amount > 0 else "➖"
+            e = "✅" if b >= 0 else "⚠️"
+            await send(client, chat_id, f"{s} {fmt(amount)} ₽ — {desc}\n{e} Касса: {fmt(b)} ₽")
         except (ValueError, IndexError):
             pass
 
-def main():
+async def main():
     init_db()
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("касса", kassa_cmd))
-    app.add_handler(CommandHandler("kassa", kassa_cmd))
-    app.add_handler(CommandHandler("история", history_cmd))
-    app.add_handler(CommandHandler("history", history_cmd))
-    app.add_handler(CommandHandler("обнулить", reset_cmd))
-    app.add_handler(CommandHandler("reset", reset_cmd))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.run_polling(drop_pending_updates=True)
+    offset = 0
+    logger.info("Бот запущен")
+    async with httpx.AsyncClient(timeout=60) as client:
+        while True:
+            try:
+                r = await client.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 30})
+                data = r.json()
+                if data.get("ok"):
+                    for upd in data["result"]:
+                        offset = upd["update_id"] + 1
+                        await handle(client, upd)
+            except Exception as e:
+                logger.error(f"Ошибка: {e}")
+                await asyncio.sleep(3)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
 
