@@ -9,6 +9,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 TOKEN = os.environ.get("BOT_TOKEN", "")
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 DB_PATH = "kassa.db"
 
@@ -57,30 +58,26 @@ def reset_kassa(chat_id):
     conn.commit()
     conn.close()
 
-def format_amount(amount):
+def fmt(amount):
     return f"{amount:,.0f}".replace(",", " ")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "💰 *Бот-касса запущен!*\n\n"
+        "💰 Бот-касса запущен!\n\n"
         "Как пользоваться:\n"
-        "`+50000 приход наличные` — приход\n"
-        "`-30000 выдача Алексей` — расход\n\n"
+        "+50000 приход наличные — приход\n"
+        "-30000 выдача Алексей — расход\n\n"
         "Команды:\n"
         "/касса — текущий остаток\n"
         "/история — последние операции\n"
-        "/обнулить — сбросить кассу",
-        parse_mode="Markdown"
+        "/обнулить — сбросить кассу"
     )
 
 async def kassa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     balance = get_balance(chat_id)
     emoji = "✅" if balance >= 0 else "⚠️"
-    await update.message.reply_text(
-        f"{emoji} *Касса:* `{format_amount(balance)} ₽`",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"{emoji} Касса: {fmt(balance)} ₽")
 
 async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -88,13 +85,13 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rows:
         await update.message.reply_text("📋 Операций пока нет.")
         return
-    lines = ["📋 *Последние операции:*\n"]
+    lines = ["📋 Последние операции:\n"]
     for amount, desc, dt in rows:
         sign = "➕" if amount > 0 else "➖"
-        lines.append(f"{sign} `{format_amount(abs(amount))} ₽` — {desc} _({dt})_")
+        lines.append(f"{sign} {fmt(abs(amount))} ₽ — {desc} ({dt})")
     balance = get_balance(chat_id)
-    lines.append(f"\n💰 *Итого в кассе: {format_amount(balance)} ₽*")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    lines.append(f"\n💰 Итого в кассе: {fmt(balance)} ₽")
+    await update.message.reply_text("\n".join(lines))
 
 async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -109,7 +106,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text and text[0] in ('+', '-'):
         parts = text.split(None, 1)
         try:
-            num_str = parts[0].replace(" ", "").replace(",", "").replace("_", "")
+            num_str = parts[0].replace(" ", "").replace(",", "")
             amount = float(num_str)
             description = parts[1].strip() if len(parts) > 1 else "без описания"
             add_operation(chat_id, amount, description)
@@ -117,14 +114,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sign = "➕" if amount > 0 else "➖"
             emoji = "✅" if balance >= 0 else "⚠️"
             await update.message.reply_text(
-                f"{sign} `{format_amount(abs(amount))} ₽` — {description}\n"
-                f"{emoji} *Касса: {format_amount(balance)} ₽*",
-                parse_mode="Markdown"
+                f"{sign} {fmt(abs(amount))} ₽ — {description}\n"
+                f"{emoji} Касса: {fmt(balance)} ₽"
             )
         except (ValueError, IndexError):
             pass
 
-async def main():
+def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -135,10 +131,8 @@ async def main():
     app.add_handler(CommandHandler("обнулить", reset_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    await app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
 
-   
-  
