@@ -2,10 +2,11 @@ import logging
 import sqlite3
 import os
 from datetime import datetime
+import asyncio
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = os.environ.get("BOT_TOKEN", "8794661669:AAFYMOINUTe3dG30NX0mDIhE0_GAHP7cyBA")
+TOKEN = os.environ.get("BOT_TOKEN", "")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -72,7 +73,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-async def kasса_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def kassa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     balance = get_balance(chat_id)
     emoji = "✅" if balance >= 0 else "⚠️"
@@ -87,12 +88,10 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rows:
         await update.message.reply_text("📋 Операций пока нет.")
         return
-
     lines = ["📋 *Последние операции:*\n"]
     for amount, desc, dt in rows:
         sign = "➕" if amount > 0 else "➖"
         lines.append(f"{sign} `{format_amount(abs(amount))} ₽` — {desc} _({dt})_")
-
     balance = get_balance(chat_id)
     lines.append(f"\n💰 *Итого в кассе: {format_amount(balance)} ₽*")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
@@ -105,25 +104,18 @@ async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
-
     text = update.message.text.strip()
     chat_id = update.effective_chat.id
-
-    # Parse +500000 description or -30000 description
     if text and text[0] in ('+', '-'):
         parts = text.split(None, 1)
         try:
-            # Remove spaces inside number like +50 000
             num_str = parts[0].replace(" ", "").replace(",", "").replace("_", "")
             amount = float(num_str)
             description = parts[1].strip() if len(parts) > 1 else "без описания"
-
             add_operation(chat_id, amount, description)
             balance = get_balance(chat_id)
-
             sign = "➕" if amount > 0 else "➖"
             emoji = "✅" if balance >= 0 else "⚠️"
-
             await update.message.reply_text(
                 f"{sign} `{format_amount(abs(amount))} ₽` — {description}\n"
                 f"{emoji} *Касса: {format_amount(balance)} ₽*",
@@ -132,22 +124,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except (ValueError, IndexError):
             pass
 
-def main():
+async def main():
     init_db()
-    app = ApplicationBuilder().token(TOKEN).build()
-
+    app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("касса", kasса_cmd))
-    app.add_handler(CommandHandler("kassa", kasса_cmd))
-    app.add_handler(CommandHandler("история", history_cmd))
+    app.add_handler(CommandHandler("касса", kassa_cmd))
+    app.add_handler(CommandHandler("kassa", kassa_cmd))
     app.add_handler(CommandHandler("история", history_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("обнулить", reset_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("Бот запущен...")
-    app.run_polling()
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
+
+   
+  
