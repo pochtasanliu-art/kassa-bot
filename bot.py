@@ -50,6 +50,10 @@ def reset(chat_id):
 def fmt(n):
     return f"{abs(n):,.0f}".replace(",", " ")
 
+def clean_cmd(text):
+    # убираем @botname из команды
+    return text.split("@")[0].lower()
+
 async def send(client, chat_id, text):
     await client.post(f"{API}/sendMessage", json={"chat_id": chat_id, "text": text})
 
@@ -62,7 +66,9 @@ async def handle(client, update):
     if not text:
         return
 
-    if text in ("/start", "/start@robkassa_bot"):
+    cmd = clean_cmd(text)
+
+    if cmd == "/start":
         await send(client, chat_id,
             "💰 Бот-касса запущен!\n\n"
             "+50000 приход наличные — приход\n"
@@ -71,12 +77,12 @@ async def handle(client, update):
             "/история — операции\n"
             "/обнулить — сброс")
 
-    elif text in ("/касса", "/kassa", "/касса@robkassa_bot"):
+    elif cmd in ("/касса", "/kassa"):
         b = get_balance(chat_id)
         e = "✅" if b >= 0 else "⚠️"
         await send(client, chat_id, f"{e} Касса: {fmt(b)} ₽")
 
-    elif text in ("/история", "/history"):
+    elif cmd in ("/история", "/history"):
         rows = get_history(chat_id)
         if not rows:
             await send(client, chat_id, "Операций пока нет.")
@@ -89,7 +95,7 @@ async def handle(client, update):
         lines.append(f"\n💰 Касса: {fmt(b)} ₽")
         await send(client, chat_id, "\n".join(lines))
 
-    elif text in ("/обнулить", "/reset"):
+    elif cmd in ("/обнулить", "/reset"):
         reset(chat_id)
         await send(client, chat_id, "🔄 Касса обнулена.")
 
@@ -125,4 +131,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
